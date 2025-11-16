@@ -17,15 +17,13 @@ Te ayudo a elegir y comprar café o té.
 Puedo recomendar productos según *sabor, **intensidad* o *tipo*,  
 y puedo recordar tus *preferencias* y *tu nombre*.  
 """)
-# PRUEBA: ¿SE CARGÓ EL TOKEN?
-st.write("¿TOKEN CARGADO?:", "SÍ" if GITHUB_TOKEN else "NO")
 
 # -----------------------------------------
 # GUARDADO REMOTO EN GITHUB (JSONL)
 # -----------------------------------------
 
-# 🚨 TU REPO REAL
-GITHUB_REPO = "ffemanuel35-ai/chatbot_recomendacion_cafe_te"
+# 🚨 NUEVO REPO INDICADO POR EL USUARIO
+GITHUB_REPO = "eleccionesgf78/cafe"
 
 FILE_PATH = "pedidos/pedidos.jsonl"
 GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]  # Definido en Streamlit Cloud
@@ -219,7 +217,7 @@ def procesar(texto):
                 mem["producto_seleccionado"] = nombre
                 return (
                     f"Probá esta alternativa:\n\n"
-                    f"{nombre.title()}** — {datos['perfil']} — *${datos['precio']}*\n"
+                    f"{nombre.title()} — {datos['perfil']} — *${datos['precio']}*\n"
                     f"¿Te gusta?"
                 )
         return "¿Preferís café o té?"
@@ -244,11 +242,11 @@ def procesar(texto):
 
         return (
             f"Perfecto {mem['nombre']}:\n"
-            f"{mem['cantidad']} x {prod.title()}** — Subtotal *${subtotal}*.\n"
+            f"{mem['cantidad']} x {prod.title()} — Subtotal *${subtotal}*.\n"
             f"Escribí *'comprar'* o *'confirmo'* para finalizar."
         )
 
-    # 8. FINALIZAR COMPRA (corregido)
+    # 8. FINALIZAR COMPRA
     if texto_l in ["comprar", "confirmo"] and mem["producto_seleccionado"] and mem["cantidad"]:
         prod = mem["producto_seleccionado"]
         cantidad = mem["cantidad"]
@@ -308,9 +306,9 @@ if user_msg:
     respuesta = procesar(user_msg)
     st.session_state.historial.append({"role": "assistant", "content": respuesta})
 
-
 for msg in st.session_state.historial:
     if msg["role"] == "user":
         st.markdown(f"🧑‍💬 *Tú:* {msg['content']}")
     else:
         st.markdown(f"🤖 *Asistente:* {msg['content']}")
+
