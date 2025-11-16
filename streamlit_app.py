@@ -1,0 +1,316 @@
+import streamlit as st
+import sqlite3
+import re
+import random
+import base64
+import json
+import requests
+
+# -----------------------------------------
+# CONFIGURACIÓN STREAMLIT
+# -----------------------------------------
+st.set_page_config(page_title="Asistente de Café/Té", page_icon="☕", layout="centered")
+st.title("☕ Tienda Café & Té — Asistente de Compra")
+
+st.markdown("""
+Te ayudo a elegir y comprar café o té.  
+Puedo recomendar productos según *sabor, **intensidad* o *tipo*,  
+y puedo recordar tus *preferencias* y *tu nombre*.  
+""")
+# PRUEBA: ¿SE CARGÓ EL TOKEN?
+st.write("¿TOKEN CARGADO?:", "SÍ" if GITHUB_TOKEN else "NO")
+
+# -----------------------------------------
+# GUARDADO REMOTO EN GITHUB (JSONL)
+# -----------------------------------------
+
+# 🚨 TU REPO REAL
+GITHUB_REPO = "ffemanuel35-ai/chatbot_recomendacion_cafe_te"
+
+FILE_PATH = "pedidos/pedidos.jsonl"
+GITHUB_TOKEN = st.secrets["GITHUB_TOKEN"]  # Definido en Streamlit Cloud
+
+
+def guardar_pedido_en_github(pedido):
+    """Guarda un pedido en un archivo .jsonl dentro del repositorio GitHub."""
+
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/{FILE_PATH}"
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github+json"
+    }
+
+    # Intentar obtener el archivo
+    resp = requests.get(url, headers=headers)
+
+    if resp.status_code == 200:
+        data = resp.json()
+        sha = data["sha"]
+        contenido_actual = base64.b64decode(data["content"]).decode("utf-8")
+    else:
+        # Archivo nuevo
+        sha = None
+        contenido_actual = ""
+
+    # Agregar nuevo pedido
+    nueva_linea = json.dumps(pedido, ensure_ascii=False)
+    nuevo_contenido = contenido_actual + nueva_linea + "\n"
+
+    # Crear body
+    update_data = {
+        "message": "Nuevo pedido agregado",
+        "content": base64.b64encode(nuevo_contenido.encode("utf-8")).decode("utf-8"),
+    }
+
+    # Solo incluir SHA si el archivo existía
+    if sha:
+        update_data["sha"] = sha
+
+    # Subir archivo
+    update_resp = requests.put(url, headers=headers, data=json.dumps(update_data))
+
+    if update_resp.status_code not in (200, 201):
+        st.error("⚠ Error al guardar en GitHub: " + update_resp.text)
+    else:
+        print("Pedido guardado en GitHub correctamente.")
+
+
+# -----------------------------------------
+# BASE DE DATOS SQLITE (local)
+# -----------------------------------------
+def init_db():
+    conn = sqlite3.connect("pedidos.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS pedidos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            codigo TEXT,
+            nombre TEXT,
+            producto TEXT,
+            cantidad INTEGER,
+            total REAL
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+init_db()
+
+
+# -----------------------------------------
+# MEMORIA DE SESIÓN
+# -----------------------------------------
+if "mem" not in st.session_state:
+    st.session_state.mem = {
+        "nombre": None,
+        "preferencia": None,
+        "producto_seleccionado": None,
+        "cantidad": None
+    }
+
+mem = st.session_state.mem
+
+
+# -----------------------------------------
+# CATÁLOGO
+# -----------------------------------------
+catalogo = {
+    "café de colombia": {"tipo": "café", "perfil": "cítrico", "precio": 1200},
+    "café espresso italiano": {"tipo": "café", "perfil": "intenso", "precio": 1100},
+    "café arábica light roast": {"tipo": "café", "perfil": "suave", "precio": 1000},
+
+    "té blanco con jazmín": {"tipo": "té", "perfil": "floral", "precio": 800},
+    "té rooibos con vainilla": {"tipo": "té", "perfil": "dulce", "precio": 750},
+    "té verde sencha": {"tipo": "té", "perfil": "herbal", "precio": 780},
+}
+
+def mostrar_catalogo():
+    texto = "### 📜 Catálogo disponible:\n"
+    for nombre, datos in catalogo.items():
+        texto += f"- *{nombre.title()}* — {datos['perfil']} — *${datos['precio']}*\n"
+    return texto
+
+
+# -----------------------------------------
+# DETECTOR DE NOMBRE
+# -----------------------------------------
+def extraer_nombre(texto):
+    texto = texto.strip()
+
+    patrones = [
+        r"soy ([a-zA-ZáéíóúÁÉÍÓÚñÑ]+)",
+        r"me llamo ([a-zA-ZáéíóúÁÉÍÓÚñÑ]+)",
+        r"mi nombre es ([a-zA-ZáéíóúÁÉÍÓÚñÑ]+)"
+    ]
+
+    for p in patrones:
+        m = re.search(p, texto, re.IGNORECASE)
+        if m:
+            return m.group(1).capitalize()
+
+    if len(texto.split()) == 1 and texto.isalpha():
+        return texto.capitalize()
+
+    return None
+
+
+# -----------------------------------------
+# RECOMENDACIÓN POR PERFIL
+# -----------------------------------------
+def recomendar_por_perfil(preferencia, actual=None):
+    preferencia = preferencia.lower()
+
+    opciones = [(n, d) for n, d in catalogo.items() if preferencia in d["perfil"].lower()]
+
+    if not opciones:
+        return None, None
+
+    if actual:
+        for nombre, datos in opciones:
+            if nombre != actual:
+                return nombre, datos
+
+    return opciones[0]
+
+
+# -----------------------------------------
+# LÓGICA PRINCIPAL
+# -----------------------------------------
+def procesar(texto):
+    texto_l = texto.lower()
+
+    # 1. Nombre
+    if mem["nombre"] is None:
+        posible = extraer_nombre(texto)
+        if posible:
+            mem["nombre"] = posible
+            return f"Encantado, *{mem['nombre']}* 😊 ¿Preferís café o té?"
+        return "¿Cómo te llamás?"
+
+    # 2. Ver catálogo
+    if "catálogo" in texto_l or "catalogo" in texto_l:
+        return mostrar_catalogo()
+
+    # 3. Preferencia sabor
+    perfiles = ["floral", "dulce", "herbal", "intenso", "suave", "cítrico", "citric"]
+
+    for p in perfiles:
+        if p in texto_l:
+            if p == "citric":
+                p = "cítrico"
+
+            mem["preferencia"] = p
+            nombre, datos = recomendar_por_perfil(p)
+
+            if nombre:
+                mem["producto_seleccionado"] = nombre
+                return (
+                    f"Te recomiendo *{nombre.title()}* — perfil {datos['perfil']} — "
+                    f"Precio: *${datos['precio']}*.\n\n¿Lo querés o querés otra opción?"
+                )
+
+    # 4. Pedir otra opción
+    if any(p in texto_l for p in ["otro", "otra", "otra opción", "quiero otra", "mostrame otro"]):
+        if mem["preferencia"]:
+            actual = mem["producto_seleccionado"]
+            nombre, datos = recomendar_por_perfil(mem["preferencia"], actual)
+
+            if nombre:
+                mem["producto_seleccionado"] = nombre
+                return (
+                    f"Probá esta alternativa:\n\n"
+                    f"{nombre.title()}** — {datos['perfil']} — *${datos['precio']}*\n"
+                    f"¿Te gusta?"
+                )
+        return "¿Preferís café o té?"
+
+    # 5. Selección específica
+    for prod in catalogo.keys():
+        if prod in texto_l:
+            mem["producto_seleccionado"] = prod
+            precio = catalogo[prod]["precio"]
+            return f"Perfecto {mem['nombre']}. ¿Cuántas unidades de *{prod.title()}* querés?"
+
+    # 6. Confirmación
+    if texto_l in ["si", "sí", "ok", "dale", "quiero"] and mem["producto_seleccionado"]:
+        return "Perfecto 😊 ¿Cuántas unidades querés comprar?"
+
+    # 7. Cantidad
+    if texto_l.isdigit() and mem["producto_seleccionado"]:
+        mem["cantidad"] = int(texto_l)
+        prod = mem["producto_seleccionado"]
+        precio = catalogo[prod]["precio"]
+        subtotal = precio * mem["cantidad"]
+
+        return (
+            f"Perfecto {mem['nombre']}:\n"
+            f"{mem['cantidad']} x {prod.title()}** — Subtotal *${subtotal}*.\n"
+            f"Escribí *'comprar'* o *'confirmo'* para finalizar."
+        )
+
+    # 8. FINALIZAR COMPRA (corregido)
+    if texto_l in ["comprar", "confirmo"] and mem["producto_seleccionado"] and mem["cantidad"]:
+        prod = mem["producto_seleccionado"]
+        cantidad = mem["cantidad"]
+        precio = catalogo[prod]["precio"]
+        total = precio * cantidad
+        codigo = f"PED{random.randint(10000,99999)}"
+
+        # Guardar en GitHub
+        guardar_pedido_en_github({
+            "codigo": codigo,
+            "nombre": mem["nombre"],
+            "producto": prod,
+            "cantidad": cantidad,
+            "total": total
+        })
+
+        mem["producto_seleccionado"] = None
+        mem["cantidad"] = None
+
+        return (
+            f"✅ *Compra confirmada, {mem['nombre']}!*\n"
+            f"Pedido *{codigo}: {cantidad} x {prod.title()} — Total **${total}*.\n"
+            f"Gracias por tu compra ☕✨"
+        )
+
+    # 9. Preguntas base
+    if "café" in texto_l or "cafe" in texto_l:
+        return "¿Buscás algo intenso, suave o cítrico?"
+
+    if "té" in texto_l or "te" in texto_l:
+        return "¿Preferís algo floral, herbal o dulce?"
+
+    return "No estoy seguro de haber entendido. ¿Querés ver el catálogo o buscás café o té?"
+
+
+# -----------------------------------------
+# INTERFAZ
+# -----------------------------------------
+col1, col2 = st.columns(2)
+
+if col1.button("📜 Ver Catálogo"):
+    st.markdown(mostrar_catalogo())
+
+if col2.button("🛒 Comprar"):
+    st.markdown("Decime qué producto querés comprar.")
+
+# Chat UI
+if "historial" not in st.session_state:
+    st.session_state.historial = [
+        {"role": "assistant", "content": "¡Hola! ¿Cómo te llamás?"}
+    ]
+
+user_msg = st.chat_input("Escribí tu mensaje...")
+
+if user_msg:
+    st.session_state.historial.append({"role": "user", "content": user_msg})
+    respuesta = procesar(user_msg)
+    st.session_state.historial.append({"role": "assistant", "content": respuesta})
+
+
+for msg in st.session_state.historial:
+    if msg["role"] == "user":
+        st.markdown(f"🧑‍💬 *Tú:* {msg['content']}")
+    else:
+        st.markdown(f"🤖 *Asistente:* {msg['content']}")
